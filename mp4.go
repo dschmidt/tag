@@ -5,7 +5,6 @@
 package tag
 
 import (
-	"bytes"
 	"encoding/binary"
 	"errors"
 	"fmt"
@@ -50,9 +49,6 @@ var means = map[string]bool{
 	"com.mixedinkey.mixedinkey": true,
 	"com.serato.dj":             true,
 }
-
-// Detect PNG image if "implicit" class is used
-var pngHeader = []byte{137, 80, 78, 71, 13, 10, 26, 10}
 
 type atomNames map[string]string
 
@@ -148,6 +144,13 @@ func (m metadataMP4) readAtomData(r io.ReadSeeker, name string, size uint32, pro
 		if err != nil {
 			return err
 		}
+
+		// covr may hold multiple "data" atoms, one per cover.
+		if name == "covr" {
+			m.data[name] = parseCoverArt(b)
+			return nil
+		}
+
 		if len(b) < 8 {
 			return fmt.Errorf("invalid encoding: expected at least %d bytes, got %d", 8, len(b))
 		}
@@ -183,15 +186,6 @@ func (m metadataMP4) readAtomData(r io.ReadSeeker, name string, size uint32, pro
 		return nil
 	}
 
-	if contentType == "implicit" {
-		if name == "covr" {
-			if bytes.HasPrefix(b, pngHeader) {
-				contentType = "png"
-			}
-			// TODO(dhowden): Detect JPEG formats too (harder).
-		}
-	}
-
 	var data interface{}
 	switch contentType {
 	case "implicit":
@@ -208,17 +202,41 @@ func (m metadataMP4) readAtomData(r io.ReadSeeker, name string, size uint32, pro
 			return fmt.Errorf("invalid encoding: expected at least %d bytes, for integer tag data, got %d", 1, len(b))
 		}
 		data = getInt(b[:1])
-
-	case "jpeg", "png":
-		data = &Picture{
-			Ext:      contentType,
-			MIMEType: "image/" + contentType,
-			Data:     b,
-		}
 	}
 	m.data[name] = data
 
 	return nil
+}
+
+// parseCoverArt splits a covr atom body into its "data" sub-atoms and returns a
+// picture for each. The image format is sniffed from the bytes, falling back to
+// the atom type code (13=jpeg, 14=png) when the bytes are not recognised.
+func parseCoverArt(raw []byte) []*Picture {
+	var pics []*Picture
+	for len(raw) >= 16 {
+		atomSize := int(binary.BigEndian.Uint32(raw[0:4]))
+		if atomSize < 16 || atomSize > len(raw) {
+			atomSize = len(raw)
+		}
+
+		if string(raw[4:8]) == "data" {
+			var declaredMIME string
+			switch atomTypes[getInt(raw[9:12])] {
+			case "jpeg", "png":
+				declaredMIME = "image/" + atomTypes[getInt(raw[9:12])]
+			}
+			data := raw[16:atomSize]
+			mimeType, ext := resolveImageType(declaredMIME, data)
+			pics = append(pics, &Picture{
+				Ext:      ext,
+				MIMEType: mimeType,
+				Data:     data,
+			})
+		}
+
+		raw = raw[atomSize:]
+	}
+	return pics
 }
 
 func readAtomHeader(r io.ReadSeeker) (name string, size uint32, err error) {
@@ -369,21 +387,33 @@ func (m metadataMP4) Comment() string {
 	return t.(string)
 }
 
-func (m metadataMP4) Picture() *Picture {
+func (m metadataMP4) coverArt() []*Picture {
 	v, ok := m.data["covr"]
 	if !ok {
 		return nil
 	}
-	p, _ := v.(*Picture)
-	return p
+	pics, _ := v.([]*Picture)
+	return pics
+}
+
+func (m metadataMP4) Picture() *Picture {
+	pics := m.coverArt()
+	if len(pics) == 0 {
+		return nil
+	}
+	return pics[0]
 }
 
 // Pictures returns the attached cover art. The MP4 "covr" atom carries no
-// picture type, so at most a single untyped picture is returned.
+// picture type, so the returned pictures are untyped.
 func (m metadataMP4) Pictures() []Picture {
-	p := m.Picture()
-	if p == nil {
+	src := m.coverArt()
+	if len(src) == 0 {
 		return nil
 	}
-	return []Picture{*p}
+	pics := make([]Picture, len(src))
+	for i, p := range src {
+		pics[i] = *p
+	}
+	return pics
 }

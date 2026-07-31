@@ -55,7 +55,7 @@ type metadataFLAC struct {
 	*metadataVorbis
 }
 
-func (m *metadataFLAC) readFLACMetadataBlock(r io.ReadSeeker) (last bool, err error) {
+func (m *metadataVorbis) readFLACMetadataBlock(r io.ReadSeeker) (last bool, err error) {
 	blockHeader, err := readBytes(r, 1)
 	if err != nil {
 		return
