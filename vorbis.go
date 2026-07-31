@@ -57,15 +57,17 @@ func (m *metadataVorbis) readVorbisComment(r io.Reader) error {
 		if err != nil {
 			return err
 		}
-		m.c[strings.ToLower(k)] = v
-	}
+		key := strings.ToLower(k)
 
-	if b64data, ok := m.c["metadata_block_picture"]; ok {
-		data, err := base64.StdEncoding.DecodeString(b64data)
-		if err != nil {
-			return err
+		// Decode each picture inline; the comment map would only keep the last.
+		// A malformed picture is skipped so it doesn't sink the rest of the tags.
+		if key == "metadata_block_picture" {
+			if data, err := base64.StdEncoding.DecodeString(v); err == nil {
+				m.readPictureBlock(bytes.NewReader(data))
+			}
 		}
-		m.readPictureBlock(bytes.NewReader(data))
+
+		m.c[key] = v
 	}
 
 	return nil
@@ -87,16 +89,6 @@ func (m *metadataVorbis) readPictureBlock(r io.Reader) error {
 	mime, err := readString(r, mimeLen)
 	if err != nil {
 		return err
-	}
-
-	ext := ""
-	switch mime {
-	case "image/jpeg":
-		ext = "jpg"
-	case "image/png":
-		ext = "png"
-	case "image/gif":
-		ext = "gif"
 	}
 
 	descLen, err := readUint(r, 4)
@@ -136,15 +128,19 @@ func (m *metadataVorbis) readPictureBlock(r io.Reader) error {
 		return err
 	}
 
+	resolvedMIME, ext := resolveImageType(mime, data)
+
 	pic := &Picture{
 		Ext:         ext,
-		MIMEType:    mime,
+		MIMEType:    resolvedMIME,
 		Type:        pictureType,
 		RawType:     byte(b),
 		Description: desc,
 		Data:        data,
 	}
-	m.p = pic
+	if m.p == nil {
+		m.p = pic
+	}
 	m.ps = append(m.ps, pic)
 	return nil
 }

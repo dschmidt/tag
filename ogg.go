@@ -15,6 +15,9 @@ import (
 var (
 	vorbisCommentPrefix = []byte("\x03vorbis")
 	opusTagsPrefix      = []byte("OpusTags")
+	speexPrefix         = []byte("Speex   ")
+	theoraCommentPrefix = []byte("\x81theora")
+	flacInOggPrefix     = []byte("\x7fFLAC")
 )
 
 var oggCRC32Poly04c11db7 = oggCRCTable(0x04c11db7)
@@ -140,6 +143,7 @@ func (o *oggDemuxer) Read(r io.Reader) ([][]byte, error) {
 // For Opus see https://tools.ietf.org/html/rfc7845
 func ReadOGGTags(r io.Reader) (Metadata, error) {
 	od := &oggDemuxer{}
+	sawSpeex := false
 	for {
 		bs, err := od.Read(r)
 		if err != nil {
@@ -147,19 +151,62 @@ func ReadOGGTags(r io.Reader) (Metadata, error) {
 		}
 
 		for _, b := range bs {
+			var comment []byte
 			switch {
 			case bytes.HasPrefix(b, vorbisCommentPrefix):
-				m := &metadataOGG{
-					newMetadataVorbis(),
-				}
-				err = m.readVorbisComment(bytes.NewReader(b[len(vorbisCommentPrefix):]))
-				return m, err
+				comment = b[len(vorbisCommentPrefix):]
 			case bytes.HasPrefix(b, opusTagsPrefix):
-				m := &metadataOGG{
-					newMetadataVorbis(),
-				}
-				err = m.readVorbisComment(bytes.NewReader(b[len(opusTagsPrefix):]))
+				comment = b[len(opusTagsPrefix):]
+			case bytes.HasPrefix(b, theoraCommentPrefix):
+				comment = b[len(theoraCommentPrefix):]
+			case bytes.HasPrefix(b, flacInOggPrefix):
+				m := &metadataOGG{newMetadataVorbis()}
+				err = m.readFLACInOgg(b, od, r)
 				return m, err
+			case bytes.HasPrefix(b, speexPrefix):
+				// The Speex comment packet has no prefix; it follows the header.
+				sawSpeex = true
+				continue
+			case sawSpeex:
+				comment = b
+			default:
+				continue
+			}
+
+			m := &metadataOGG{newMetadataVorbis()}
+			err = m.readVorbisComment(bytes.NewReader(comment))
+			return m, err
+		}
+	}
+}
+
+// readFLACInOgg reads the FLAC metadata blocks carried by a FLAC-in-Ogg stream.
+// The first packet holds the "\x7fFLAC" header plus STREAMINFO; each subsequent
+// Ogg packet carries one further metadata block.
+func (m *metadataOGG) readFLACInOgg(first []byte, od *oggDemuxer, r io.Reader) error {
+	if len(first) < 13 || string(first[9:13]) != "fLaC" {
+		return errors.New("invalid FLAC-in-Ogg header")
+	}
+
+	packets := [][]byte{first[13:]}
+	for {
+		for len(packets) == 0 {
+			bs, err := od.Read(r)
+			if err != nil {
+				return err
+			}
+			packets = append(packets, bs...)
+		}
+
+		br := bytes.NewReader(packets[0])
+		packets = packets[1:]
+		for br.Len() > 0 {
+			last, err := m.readFLACMetadataBlock(br)
+			if err != nil {
+				return err
+			}
+			if last {
+				return nil
 			}
 		}
 	}

@@ -57,11 +57,13 @@ func main() {
 
 		tags := m.Raw()
 		for k, v := range tags {
-			if _, ok := v.(*tag.Picture); ok {
+			switch v.(type) {
+			case *tag.Picture, []*tag.Picture:
+				// Use String() rather than dumping the raw picture bytes.
 				fmt.Printf("%#v: %v\n", k, v)
-				continue
+			default:
+				fmt.Printf("%#v: %#v\n", k, v)
 			}
-			fmt.Printf("%#v: %#v\n", k, v)
 		}
 	}
 

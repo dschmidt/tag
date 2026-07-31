@@ -585,12 +585,25 @@ func readPICFrame(b []byte) (*Picture, error) {
 		return nil, fmt.Errorf("error decoding PIC description text: %v", err)
 	}
 
-	var mimeType string
+	var declaredMIME string
 	switch ext {
 	case "jpeg", "jpg":
-		mimeType = "image/jpeg"
+		declaredMIME = "image/jpeg"
 	case "png":
-		mimeType = "image/png"
+		declaredMIME = "image/png"
+	case "gif":
+		declaredMIME = "image/gif"
+	case "bmp":
+		declaredMIME = "image/bmp"
+	case "tif", "tiff":
+		declaredMIME = "image/tiff"
+	}
+
+	data := descDataSplit[1]
+	// PIC uses a 3-char format code, not a MIME type; sniff for the rest.
+	mimeType, sniffedExt := resolveImageType(declaredMIME, data)
+	if sniffedExt != "" {
+		ext = sniffedExt
 	}
 
 	return &Picture{
@@ -599,7 +612,7 @@ func readPICFrame(b []byte) (*Picture, error) {
 		Type:        pictureTypes[picType],
 		RawType:     picType,
 		Description: desc,
-		Data:        descDataSplit[1],
+		Data:        data,
 	}, nil
 }
 
@@ -639,13 +652,8 @@ func readAPICFrame(b []byte) (*Picture, error) {
 		return nil, fmt.Errorf("error decoding APIC description text: %v", err)
 	}
 
-	var ext string
-	switch mimeType {
-	case "image/jpeg":
-		ext = "jpg"
-	case "image/png":
-		ext = "png"
-	}
+	data := descDataSplit[1]
+	mimeType, ext := resolveImageType(mimeType, data)
 
 	return &Picture{
 		Ext:         ext,
@@ -653,6 +661,6 @@ func readAPICFrame(b []byte) (*Picture, error) {
 		Type:        pictureTypes[picType],
 		RawType:     picType,
 		Description: desc,
-		Data:        descDataSplit[1],
+		Data:        data,
 	}, nil
 }
